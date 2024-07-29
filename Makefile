@@ -91,7 +91,7 @@ TEST_PROGRAMS = \
 
 all: $(PROGRAMS) $(MISC_PROGRAMS) $(TEST_PROGRAMS)
 
-ALL_CPPFLAGS = -I. $(HTSLIB_CPPFLAGS) $(LZ4_CPPFLAGS) $(CPPFLAGS) -I/home/nickr/projects/gbam/tests/inc
+ALL_CPPFLAGS = -I. $(HTSLIB_CPPFLAGS) $(LZ4_CPPFLAGS) $(CPPFLAGS) -I/home/nickr/projects/gbam/c_api/inc
 ALL_LDFLAGS  = $(HTSLIB_LDFLAGS) $(LZ4_LDFLAGS) $(LDFLAGS)
 ALL_LIBS     = -lz $(LIBS) -L/home/nickr/projects/gbam/target/release/ -lgbam_tools_cffi
 

@@ -1468,8 +1468,7 @@ static void write_json_stats(FILE *fp, const char *offset, const char *group_nam
    Marking the supplementary reads of a duplicate as also duplicates takes an extra file read/write
    step.  This is because the duplicate can occur before the primary read.*/
 
-static int bam_mark_duplicates(md_param_t *param) {
-    bam_hdr_t *header = NULL;
+static int bam_mark_duplicates(md_param_t *param, const char* path) {
     khiter_t k;
     khash_t(reads) *pair_hash        = kh_init(reads);
     khash_t(reads) *single_hash      = kh_init(reads);
@@ -1480,7 +1479,6 @@ static int bam_mark_duplicates(md_param_t *param) {
     int32_t prev_tid;
     hts_pos_t prev_coord;
     read_queue_t *in_read;
-    int ret;
     stats_block_t *stats, *stat_array = NULL;
     int num_groups = 0;
     long opt_warnings = 0, bc_warnings = 0;
@@ -1489,15 +1487,14 @@ static int bam_mark_duplicates(md_param_t *param) {
     int exclude = 0;
     check_list_t dup_list = {NULL, 0, 0};
 
+    void* gbam_reader = get_gbam_reader(path, DISABLE_CIGAR);
+    sam_hdr_t* header = get_header(gbam_reader);
+
     if (!pair_hash || !single_hash || !read_buffer || !dup_hash || !rg_hash) {
         print_error("markdup", "error, unable to allocate memory to initialise structures.\n");
         goto fail;
     }
 
-    if ((header = sam_hdr_read(param->in)) == NULL) {
-        print_error("markdup", "error reading header\n");
-        goto fail;
-    }
 
     // accept unknown, unsorted or coordinate sort order, but error on queryname sorted.
     // only really works on coordinate sorted files.
@@ -1509,73 +1506,12 @@ static int bam_mark_duplicates(md_param_t *param) {
     }
     ks_free(&str);
 
-    if (!param->no_pg && sam_hdr_add_pg(header, "samtools", "VN", samtools_version(),
-                        param->arg_list ? "CL" : NULL,
-                        param->arg_list ? param->arg_list : NULL,
-                        NULL) != 0) {
-        print_error("markdup", "warning, unable to add @PG line to header.\n");
-    }
-
-    if (sam_hdr_write(param->out, header) < 0) {
+       if (sam_hdr_write(param->out, header) < 0) {
         print_error("markdup", "error writing header.\n");
         goto fail;
     }
-    if (param->write_index) {
-        if (!(idx_fn = auto_index(param->out, param->out_fn, header)))
-            goto fail;
-    }
 
-    if (param->read_groups) {
-        num_groups = sam_hdr_count_lines(header, "RG");
-        int g_ret = 0;
 
-        if (num_groups > 0) {
-            int i;
-
-            for (i = 0; i < num_groups; i++) {
-                const char *rg_key;
-                khiter_t rg;
-
-                rg_key = sam_hdr_line_name(header, "RG", i);
-
-                if (rg_key) {
-                    rg = kh_get(read_groups, rg_hash, rg_key);
-
-                    if (rg == kh_end(rg_hash)) { // new entry
-                        rg = kh_put(read_groups, rg_hash, rg_key, &g_ret);
-
-                        if (g_ret > 0) {
-                            kh_value(rg_hash, rg) = i + 1;
-                        } else {
-                            print_error("markdup", "error, unable to populate read group ids.  "
-                                     "Read groups will not be used\n");
-                            g_ret = -1;
-                            break;
-                        }
-                    } else {
-                        print_error("markdup", "error, duplicate read group ids %s."
-                                  "Read groups will not be used\n", rg_key);
-                        g_ret = -1;
-                        break;
-                    }
-                } else {
-                    print_error("markdup", "error, Unable to retrieve read group at position %d."
-                              "Read groups will not be used\n", i);
-                    g_ret = -1;
-                    break;
-                }
-            }
-        } else {
-            print_error("markdup", "error, no read groups found.\n");
-            g_ret = -1;
-        }
-
-        if (g_ret < 0) {
-            print_error("markdup", "error, read groups will not be used.\n");
-            param->read_groups = 0;
-            num_groups = 0;
-        }
-    }
 
     // stat_array[0] will be for ungrouped reads
     stat_array = calloc(num_groups + 1, sizeof(stats_block_t));
@@ -1590,23 +1526,17 @@ static int bam_mark_duplicates(md_param_t *param) {
 
     // get the buffer going
     in_read = kl_pushp(read_queue, read_buffer);
+    in_read->b = get_empty_bam1_t();
+
     if (!in_read) {
         print_error("markdup", "error, unable to allocate memory to hold reads.\n");
         goto fail;
     }
 
-    // handling supplementary reads needs a temporary file
-    if (param->supp) {
-        if (tmp_file_open_write(&temp, param->prefix, 1)) {
-            print_error("markdup", "error, unable to open tmp file %s.\n", param->prefix);
-            goto fail;
-        }
-    }
-
-    if ((in_read->b = bam_init1()) == NULL) {
-        print_error("markdup", "error, unable to allocate memory for alignment.\n");
-        goto fail;
-    }
+    // if ((in_read->b = bam_init1()) == NULL) {
+    //     print_error("markdup", "error, unable to allocate memory for alignment.\n");
+    //     goto fail;
+    // }
 
     if (param->check_chain && !(param->tag || param->opt_dist))
         param->check_chain = 0;
@@ -1621,7 +1551,19 @@ static int bam_mark_duplicates(md_param_t *param) {
         }
     }
 
-    while ((ret = sam_read1(param->in, header, in_read->b)) >= 0) {
+    // for(int i = 0; i <100; i++){
+    //     bam1_t rec2 = get_empty_bam1_t();
+    //     printf("%p\n", rec2.data);
+    // }
+
+    // exit(1);
+
+
+    for(int rec_number = 0; rec_number < get_records_num(gbam_reader); rec_number++){
+    
+        in_read->b = get_bam_record_fast(gbam_reader, rec_number);
+
+
 
         // do some basic coordinate order checks
         if (in_read->b->core.tid >= 0) { // -1 for unmapped reads
@@ -1976,26 +1918,20 @@ static int bam_mark_duplicates(md_param_t *param) {
             }
 
             kl_shift(read_queue, read_buffer, NULL);
-            bam_destroy1(in_read->b);
+            free_bam_record(in_read->b);
             rq = kl_begin(read_buffer);
         }
 
         // set the next one up for reading
         in_read = kl_pushp(read_queue, read_buffer);
+        // Leak is here
+        in_read->b = bam_init1();
         if (!in_read) {
             print_error("markdup", "error, unable to allocate memory for read in queue.\n");
             goto fail;
         }
 
-        if ((in_read->b = bam_init1()) == NULL) {
-            print_error("markdup", "error, unable to allocate memory for alignment.\n");
-            goto fail;
-        }
-    }
-
-    if (ret < -1) {
-        print_error("markdup", "error, truncated input file.\n");
-        goto fail;
+        
     }
 
     // write out the end of the list
@@ -2037,82 +1973,9 @@ static int bam_mark_duplicates(md_param_t *param) {
         }
 
         kl_shift(read_queue, read_buffer, NULL);
-        bam_destroy1(in_read->b);
+        free_bam_record(in_read->b);
+        // bam_destroy1(in_read->b);
         rq = kl_begin(read_buffer);
-    }
-
-    if (param->supp) {
-        bam1_t *b;
-
-        if (tmp_file_end_write(&temp)) {
-            print_error("markdup", "error, unable to end tmp writing.\n");
-            goto fail;
-        }
-
-        // read data from temp file and mark duplicate supplementary alignments
-
-        if (tmp_file_begin_read(&temp)) {
-            goto fail;
-        }
-
-        b = bam_init1();
-
-        while ((ret = tmp_file_read(&temp, b)) > 0) {
-
-            if ((b->core.flag & BAM_FSUPPLEMENTARY) || (b->core.flag & BAM_FUNMAP) || (b->core.flag & BAM_FSECONDARY)) {
-
-                k = kh_get(duplicates, dup_hash, bam_get_qname(b));
-
-                if (k != kh_end(dup_hash)) {
-
-                    b->core.flag  |= BAM_FDUP;
-                    stat_array[kh_val(dup_hash, k).read_group].np_duplicate++;
-
-                    if (param->tag && kh_val(dup_hash, k).name) {
-                        if (bam_aux_update_str(b, "do", strlen(kh_val(dup_hash, k).name) + 1, (char*)kh_val(dup_hash, k).name)) {
-                            print_error("markdup", "error, unable to append supplementary 'do' tag.\n");
-                            goto fail;
-                        }
-                    }
-
-                    if (param->opt_dist) {
-                        if (kh_val(dup_hash, k).type) {
-                            bam_aux_update_str(b, "dt", 3, "SQ");
-                            stat_array[kh_val(dup_hash, k).read_group].np_opt_duplicate++;
-                        } else {
-                            bam_aux_update_str(b, "dt", 3, "LB");
-                        }
-                    }
-                }
-            }
-
-            if (!param->remove_dups || !(b->core.flag & BAM_FDUP)) {
-                if (param->dc && (b->core.flag & BAM_FDUP)) {
-                    uint8_t* data = bam_aux_get(b, "dc");
-                    if(data) bam_aux_del(b, data);
-                }
-                if (sam_write1(param->out, header, b) < 0) {
-                    print_error("markdup", "error, writing final output failed.\n");
-                    goto fail;
-                }
-            }
-        }
-
-        if (ret == -1) {
-            print_error("markdup", "error, failed to read tmp file.\n");
-            goto fail;
-        }
-
-        for (k = kh_begin(dup_hash); k != kh_end(dup_hash); ++k) {
-            if (kh_exist(dup_hash, k)) {
-                free(kh_val(dup_hash, k).name);
-                free((char *)kh_key(dup_hash, k));
-                kh_key(dup_hash, k) = NULL;
-            }
-        }
-
-        tmp_file_destroy(&temp);
-        bam_destroy1(b);
     }
 
     if (opt_warnings) {
@@ -2216,12 +2079,6 @@ static int bam_mark_duplicates(md_param_t *param) {
         }
     }
 
-    if (param->write_index) {
-        if (sam_idx_save(param->out) < 0) {
-            print_error_errno("markdup", "error, writing index failed");
-            goto fail;
-        }
-    }
 
     if (param->check_chain && (param->tag || param->opt_dist))
         free(dup_list.c);
@@ -2233,7 +2090,8 @@ static int bam_mark_duplicates(md_param_t *param) {
     kl_destroy(read_queue, read_buffer);
     kh_destroy(duplicates, dup_hash);
     kh_destroy(read_groups, rg_hash);
-    sam_hdr_destroy(header);
+
+    free_header(header);
 
     return 0;
 
@@ -2257,7 +2115,10 @@ static int bam_mark_duplicates(md_param_t *param) {
     free(stat_array);
     kh_destroy(reads, pair_hash);
     kh_destroy(reads, single_hash);
-    sam_hdr_destroy(header);
+
+
+    free_header(header);
+
     return 1;
 }
 
@@ -2303,25 +2164,6 @@ static int markdup_usage(void) {
 
 
 int bam_markdup(int argc, char **argv) {
-    
-    void* reader = get_gbam_reader("/home/nickr/projects/gbam/test_data/little.gbam");
-    sam_hdr_t* hdr = get_header(reader);
-
-    bam1_t buf = get_empty_bam1_t();
-    for(int i = 0; i < get_records_num(reader); i++){
-        kstring_t s = {0,0,NULL};
-        refill_bam_record(reader, i, &buf);
-        int res = sam_format1(hdr, &buf, &s);
-  
-        printf("%s\n", s.s);
-
-        free(s.s);
-    }
-    free_bam_record(buf);
-    free_header(hdr);
-
-
-
     int c, ret, bc_name = 0;
     char wmode[4] = {'w', 0, 0, 0};
     sam_global_args ga = SAM_GLOBAL_ARGS_INIT;
@@ -2473,12 +2315,7 @@ int bam_markdup(int argc, char **argv) {
         }
     }
 
-    param.in = sam_open_format(argv[optind], "r", &ga.in);
-
-    if (!param.in) {
-        print_error_errno("markdup", "error, failed to open \"%s\" for input", argv[optind]);
-        return 1;
-    }
+    const char* fn = argv[optind];
 
     strcat(wmode, "b"); // default if unknown suffix
     sam_open_mode(wmode + strlen(wmode)-1, argv[optind + 1], NULL);
@@ -2487,16 +2324,6 @@ int bam_markdup(int argc, char **argv) {
     if (!param.out) {
         print_error_errno("markdup", "error, failed to open \"%s\" for output", argv[optind + 1]);
         return 1;
-    }
-
-    if (ga.nthreads > 0)  {
-        if (!(p.pool = hts_tpool_init(ga.nthreads))) {
-            print_error("markdup", "error creating thread pool.\n");
-            return 1;
-        }
-
-        hts_set_opt(param.in,  HTS_OPT_THREAD_POOL, &p);
-        hts_set_opt(param.out, HTS_OPT_THREAD_POOL, &p);
     }
 
     // actual stuff happens here
@@ -2522,14 +2349,14 @@ int bam_markdup(int argc, char **argv) {
     param.write_index = ga.write_index;
     param.out_fn = argv[optind + 1];
 
-    ret = bam_mark_duplicates(&param);
+    ret = bam_mark_duplicates(&param, fn);
 
-    sam_close(param.in);
 
     if (sam_close(param.out) < 0) {
         print_error("markdup", "error closing output file.\n");
         ret = 1;
     }
+
 
     if (p.pool) hts_tpool_destroy(p.pool);
 
