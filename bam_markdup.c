@@ -1487,7 +1487,7 @@ static int bam_mark_duplicates(md_param_t *param, const char* path) {
     int exclude = 0;
     check_list_t dup_list = {NULL, 0, 0};
 
-    void* gbam_reader = get_gbam_reader(path, DISABLE_CIGAR);
+    void* gbam_reader = get_gbam_reader(path, DISABLE_CIGAR | DISABLE_SEQ);
     sam_hdr_t* header = get_header(gbam_reader);
 
     if (!pair_hash || !single_hash || !read_buffer || !dup_hash || !rg_hash) {
@@ -1897,10 +1897,12 @@ static int bam_mark_duplicates(md_param_t *param, const char* path) {
                         goto fail;
                     }
                 } else {
-                    if (sam_write1(param->out, header, in_read->b) < 0) {
-                        print_error("markdup", "error, writing output failed.\n");
-                        goto fail;
-                    }
+                    printf("%d\n", (int)((((in_read->b)->core.flag) & BAM_FDUP) > 0));
+
+                    // if (sam_write1(param->out, header, in_read->b) < 0) {
+                    //     print_error("markdup", "error, writing output failed.\n");
+                    //     goto fail;
+                    // }
                 }
 
                 stat_array[in_read->read_group].writing++;
@@ -1961,11 +1963,12 @@ static int bam_mark_duplicates(md_param_t *param, const char* path) {
                     if (param->dc && !(in_read->b->core.flag & BAM_FDUP)) {
                         bam_aux_update_int(in_read->b, "dc", in_read->dc);
                     }
+                    printf("%d\n", (int)((((in_read->b)->core.flag) & BAM_FDUP) > 0));
 
-                    if (sam_write1(param->out, header, in_read->b) < 0) {
-                        print_error("markdup", "error, writing output failed on final write.\n");
-                        goto fail;
-                    }
+                    // if (sam_write1(param->out, header, in_read->b) < 0) {
+                    //     print_error("markdup", "error, writing output failed on final write.\n");
+                    //     goto fail;
+                    // }
                 }
 
                 stat_array[in_read->read_group].writing++;
