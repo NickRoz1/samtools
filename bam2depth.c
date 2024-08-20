@@ -45,6 +45,9 @@ DEALINGS IN THE SOFTWARE.  */
 #include "sam_opts.h"
 #include "htslib/khash.h"
 
+#include "api.h"
+
+
 // From bam_plcmd.c
 int read_file_list(const char *file_list, int *n, char **argv[]);
 
@@ -495,7 +498,7 @@ static int fastdepth_core(depth_opt *opt, uint32_t nfiles, char **fn,
         goto err;
 
     for (i = 0; i < nfiles; i++)
-        if (!(b[i] = bam_init1()))
+        if (!(b[i] = get_empty_bam1_t()))
             goto err;
 
     // Do we need one overlap hash per file? Or shared?
@@ -539,7 +542,7 @@ static int fastdepth_core(depth_opt *opt, uint32_t nfiles, char **fn,
         for(;;) {
             ret = itr && itr[i]
                 ? sam_itr_next(fp[i], itr[i], b[i])
-                : sam_read1(fp[i], h[i], b[i]);
+                : fill_next_record(fp[i], b[i]);
             if (ret < -1)
                 goto err;
             if (ret == -1) {
@@ -631,7 +634,7 @@ static int fastdepth_core(depth_opt *opt, uint32_t nfiles, char **fn,
         for(;!finished[i];) {
             ret = itr && itr[i]
                 ? sam_itr_next(fp[i], itr[i], b[i])
-                : sam_read1(fp[i], h[i], b[i]);
+                : fill_next_record(fp[i], b[i]);
             if (ret < -1) {
                 ret = -1;
                 goto err;
@@ -672,7 +675,7 @@ static int fastdepth_core(depth_opt *opt, uint32_t nfiles, char **fn,
 
     for (i = 0; i < nfiles; i++) {
         if (b[i])
-            bam_destroy1(b[i]);
+            free_bam_record(b[i]);
         if (dh.hist && dh.hist[i])
             free(dh.hist[i]);
     }
@@ -908,7 +911,7 @@ int main_depth(int argc, char *argv[])
         }
         nfiles /= 2;
     }
-    fp = malloc(nfiles * sizeof(*fp));
+    fp = malloc(nfiles * sizeof(void));
     header = malloc(nfiles * sizeof(*header));
     if (!fp || !header) {
         print_error_errno("depth", "Out of memory");
@@ -922,35 +925,35 @@ int main_depth(int argc, char *argv[])
             return 1;
     }
 
-    for (i = 0; i < nfiles; i++, optind++) {
-        fp[i] = sam_open_format(argv[optind], "r", &ga.in);
+    for (i = 0; i < nfiles; i++, optind++) {        
+        fp[i] = get_gbam_reader(argv[optind], DISABLE_TAGS | DISABLE_SEQ);
         if (fp[i] == NULL) {
             print_error_errno("depth",
                               "Cannot open input file \"%s\"", argv[optind]);
             return 1;
         }
 
-        if (ga.nthreads > 0)
-            hts_set_threads(fp[i], ga.nthreads);
+        // if (ga.nthreads > 0)
+        //     hts_set_threads(fp[i], ga.nthreads);
 
-        if (hts_set_opt(fp[i], CRAM_OPT_REQUIRED_FIELDS,
-                        SAM_FLAG | SAM_RNAME | SAM_POS | SAM_CIGAR
-                        | (opt.remove_overlaps ? SAM_QNAME|SAM_RNEXT|SAM_PNEXT
-                                               : 0)
-                        | (opt.min_mqual       ? SAM_MAPQ  : 0)
-                        | (opt.min_len         ? SAM_SEQ   : 0)
-                        | (opt.min_qual        ? SAM_QUAL  : 0))) {
-            fprintf(stderr, "Failed to set CRAM_OPT_REQUIRED_FIELDS value\n");
-            return 1;
-        }
+        // if (hts_set_opt(fp[i], CRAM_OPT_REQUIRED_FIELDS,
+        //                 SAM_FLAG | SAM_RNAME | SAM_POS | SAM_CIGAR
+        //                 | (opt.remove_overlaps ? SAM_QNAME|SAM_RNEXT|SAM_PNEXT
+        //                                        : 0)
+        //                 | (opt.min_mqual       ? SAM_MAPQ  : 0)
+        //                 | (opt.min_len         ? SAM_SEQ   : 0)
+        //                 | (opt.min_qual        ? SAM_QUAL  : 0))) {
+        //     fprintf(stderr, "Failed to set CRAM_OPT_REQUIRED_FIELDS value\n");
+        //     return 1;
+        // }
 
-        if (hts_set_opt(fp[i], CRAM_OPT_DECODE_MD, 0)) {
-            fprintf(stderr, "Failed to set CRAM_OPT_DECODE_MD value\n");
-            return 1;
-        }
+        // if (hts_set_opt(fp[i], CRAM_OPT_DECODE_MD, 0)) {
+        //     fprintf(stderr, "Failed to set CRAM_OPT_DECODE_MD value\n");
+        //     return 1;
+        // }
 
         // FIXME: what if headers differ?
-        header[i] = sam_hdr_read(fp[i]);
+        header[i] = get_header(fp[i]);;
         if (header == NULL) {
             fprintf(stderr, "Failed to read header for \"%s\"\n",
                     argv[optind]);
@@ -978,8 +981,8 @@ int main_depth(int argc, char *argv[])
         ? 1 : 0;
 
     for (i = 0; i < nfiles; i++) {
-        sam_hdr_destroy(header[i]);
-        sam_close(fp[i]);
+        free_header(header[i]);
+        free_gbam_reader(fp[i]);
         if (itr && itr[i])
             hts_itr_destroy(itr[i]);
     }
